@@ -70,6 +70,24 @@ public class OrderDetailService {
 	    Product product = productRepository.findById(orderDetailDTO.getProduct_id())
 	            .orElseThrow(() -> new EntityNotFoundException("Product not found with ID: " + orderDetailDTO.getProduct_id()));
 
+        // Validate product stock
+	    System.out.println("DEBUG: Validating stock for product ID: " + orderDetailDTO.getProduct_id());
+	    Integer availableStock = product.getStock(); // Assuming Product has a getStock() method
+	    System.out.println("DEBUG: Available stock for product ID " + orderDetailDTO.getProduct_id() + ": " + (availableStock != null ? availableStock : "null"));
+	    System.out.println("DEBUG: Requested quantity: " + orderDetailDTO.getQty());
+        if (availableStock == null || availableStock < orderDetailDTO.getQty()) {
+            throw new IllegalStateException("Insufficient stock for product ID: " + orderDetailDTO.getProduct_id() +
+                    ". Available: " + (availableStock != null ? availableStock : 0) +
+                    ", Requested: " + orderDetailDTO.getQty());
+        } else {
+            // Update product stock
+            System.out.println("DEBUG: Sufficient stock. Updating stock for product ID: " + orderDetailDTO.getProduct_id());
+            int newStock = availableStock - orderDetailDTO.getQty();
+            System.out.println("DEBUG: New stock value: " + newStock);
+            product.setStock(newStock);
+            System.out.println("DEBUG: Stock updated for product ID: " + orderDetailDTO.getProduct_id() + " to " + newStock);
+        }
+        
 	    // Populate calculated fields
 	    BigDecimal unitPrice = product.getPrice() != null ? product.getPrice() : BigDecimal.ZERO;
 	    BigDecimal subTotal = unitPrice.multiply(BigDecimal.valueOf(orderDetailDTO.getQty()));
@@ -92,6 +110,7 @@ public class OrderDetailService {
 	    // Save to DB with detailed exception handling
 	    OrderDetail savedOrderDetail;
 	    try {
+            productRepository.save(product); // Save updated product stock
 	        savedOrderDetail = orderDetailRepository.save(orderDetail);
 	    } catch (Exception e) {
 	        throw new RuntimeException("Failed to save order detail: " + e.getMessage(), e);

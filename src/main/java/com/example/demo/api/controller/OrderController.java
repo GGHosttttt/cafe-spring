@@ -40,58 +40,91 @@ public class OrderController {
 
     @GetMapping
     public ResponseEntity<ApiResponse<List<OrderDTO>>> getAllOrders() {
-        logger.debug("Fetching all orders");
-        List<Order> orders = orderRepository.findAll();
+        List<Order> orders = orderRepository.findAllByOrderByOrderDateTimeDesc();
         List<OrderDTO> orderDTOs = orders.stream()
                 .map(this::mapToDTO)
                 .collect(Collectors.toList());
-        logger.info("Retrieved {} orders successfully", orders.size());
         return ResponseEntity.ok(ApiResponse.success(orderDTOs, "Orders retrieved successfully"));
     }
 
-    @PostMapping
-    public ResponseEntity<ApiResponse<OrderDTO>> createOrder(@Valid @RequestBody OrderDTO orderDTO) {
-        logger.debug("Creating new order with details: {}", orderDTO);
+@PostMapping
+public ResponseEntity<ApiResponse<OrderDTO>> createOrder(@Valid @RequestBody OrderDTO orderDTO) {
+    logger.debug("Creating new order with details: {}", orderDTO);
 
-        if (orderDTO.getOrderDetails() == null || orderDTO.getOrderDetails().isEmpty()) {
-            logger.warn("Order creation failed: No order details provided");
-            return ResponseEntity.status(400).body(ApiResponse.error("Order must contain at least one item", null));
-        }
-
-        Order order = new Order();
-        order.setOrderDateTime(orderDTO.getOrderDateTime() != null ? orderDTO.getOrderDateTime() : java.time.LocalDateTime.now());
-        order.setStatus(orderDTO.getStatus() ? orderDTO.getStatus() : false);
-
-        List<OrderDetail> orderDetails = orderDTO.getOrderDetails().stream().map(detailDTO -> {
-            OrderDetail detail = new OrderDetail();
-            Product product = productRepository.findById(detailDTO.getProduct_id())
-                    .orElseThrow(() -> new RuntimeException("Product not found: " + detailDTO.getProduct_id()));
-            detail.setOrder(order);
-            detail.setProduct(product);
-            detail.setQty(detailDTO.getQty());
-            detail.setMessage(detailDTO.getMessage());
-            // Calculate and set unitPrice and subTotal
-            BigDecimal unitPrice = product.getPrice();
-            detail.setUnitPrice(unitPrice);
-            BigDecimal subTotal = unitPrice.multiply(BigDecimal.valueOf(detailDTO.getQty()));
-            detail.setSubTotal(subTotal);
-            return detail;
-        }).collect(Collectors.toList());
-
-        order.setOrderDetails(orderDetails);
-
-        BigDecimal totalAmount = orderDetails.stream()
-                .map(detail -> detail.getSubTotal())
-                .reduce(BigDecimal.ZERO, BigDecimal::add);
-        order.setTotalAmount(totalAmount);
-
-        Order savedOrder = orderRepository.save(order);
-        logger.info("Order created successfully with ID: {}", savedOrder.getId());
-
-        OrderDTO savedOrderDTO = mapToDTO(savedOrder);
-        return ResponseEntity.ok(ApiResponse.success(savedOrderDTO, "Order created successfully"));
+    if (orderDTO.getOrderDetails() == null || orderDTO.getOrderDetails().isEmpty()) {
+        logger.warn("Order creation failed: No order details provided");
+        return ResponseEntity.status(400).body(ApiResponse.error("Order must contain at least one item", null));
     }
 
+    Order order = new Order();
+    order.setOrderDateTime(orderDTO.getOrderDateTime() != null ? orderDTO.getOrderDateTime() : java.time.LocalDateTime.now());
+    order.setStatus(orderDTO.getStatus()? true : false);
+
+    // Validate and update stock for each product in order details
+    List<OrderDetail> orderDetails = orderDTO.getOrderDetails().stream().map(detailDTO -> {
+        // Validate input
+        if (detailDTO.getProduct_id() == null) {
+            throw new IllegalArgumentException("Product ID is required in order detail");
+        }
+        if (detailDTO.getQty() == null || detailDTO.getQty() <= 0) {
+            throw new IllegalArgumentException("Quantity must be a positive number in order detail");
+        }
+
+        // Fetch product
+        Product product = productRepository.findById(detailDTO.getProduct_id())
+                .orElseThrow(() -> new RuntimeException("Product not found: " + detailDTO.getProduct_id()));
+
+        // Validate stock
+        Integer availableStock = product.getStock();
+        if (availableStock == null || availableStock < detailDTO.getQty()) {
+            throw new IllegalStateException("Insufficient stock for product ID: " + detailDTO.getProduct_id() +
+                    ". Available: " + (availableStock != null ? availableStock : 0) +
+                    ", Requested: " + detailDTO.getQty());
+        }
+
+        // Update stock
+        int newStock = availableStock - detailDTO.getQty();
+        product.setStock(newStock);
+        productRepository.save(product); // Save updated stock
+
+        // Create order detail
+        OrderDetail detail = new OrderDetail();
+        detail.setOrder(order);
+        detail.setProduct(product);
+        detail.setQty(detailDTO.getQty());
+        detail.setMessage(detailDTO.getMessage());
+        // Calculate and set unitPrice and subTotal
+        BigDecimal unitPrice = product.getPrice() != null ? product.getPrice() : BigDecimal.ZERO;
+        detail.setUnitPrice(unitPrice);
+        BigDecimal subTotal = unitPrice.multiply(BigDecimal.valueOf(detailDTO.getQty()));
+        detail.setSubTotal(subTotal);
+
+        return detail;
+    }).collect(Collectors.toList());
+
+    order.setOrderDetails(orderDetails);
+
+    // Calculate total amount
+    BigDecimal totalAmount = orderDetails.stream()
+            .map(OrderDetail::getSubTotal)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
+    order.setTotalAmount(totalAmount);
+
+    // Save the order
+    Order savedOrder;
+    try {
+        savedOrder = orderRepository.save(order);
+        logger.info("Order created successfully with ID: {}", savedOrder.getId());
+    } catch (Exception e) {
+        throw new RuntimeException("Failed to save order: " + e.getMessage(), e);
+    }
+
+    OrderDTO savedOrderDTO = mapToDTO(savedOrder);
+    return ResponseEntity.ok(ApiResponse.success(savedOrderDTO, "Order created successfully"));
+}
+
+    
+    
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<OrderDTO>> updateOrder(@PathVariable Long id, @Valid @RequestBody OrderDTO orderDTO) {
         logger.debug("Updating order with ID: {}", id);

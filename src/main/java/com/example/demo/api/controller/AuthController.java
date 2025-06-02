@@ -18,6 +18,9 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.Optional;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 @RestController
@@ -91,33 +94,55 @@ public class AuthController {
             return ResponseEntity.status(401).body(ApiResponse.error("Invalid token", null));
         }
     }
-    
+
     @PostMapping("/test-password")
     public ResponseEntity<ApiResponse<String>> testPassword(@Valid @RequestBody LoginRequest loginRequest) {
-        logger.debug("Testing and updating password for username: {}", loginRequest.getUsername());
+        logger.debug("Processing request for username: {}", loginRequest.getUsername());
+
+        // Validate input
+        if (loginRequest.getUsername() == null || loginRequest.getUsername().trim().isEmpty()) {
+            logger.warn("Invalid request: Username is required");
+            return ResponseEntity.status(400).body(ApiResponse.error("Username is required", null));
+        }
+        if (loginRequest.getPassword() == null || loginRequest.getPassword().trim().isEmpty()) {
+            logger.warn("Invalid request: Password is required");
+            return ResponseEntity.status(400).body(ApiResponse.error("Password is required", null));
+        }
+
         try {
-            // Generate bcrypt hash
+            // Check if user already exists
+            Optional<User> existingUser = userRepository.findByUsername(loginRequest.getUsername());
+            User user = existingUser.orElse(new User());
+
+            // Generate bcrypt hash for the password
             String newHash = passwordEncoder.encode(loginRequest.getPassword());
             logger.debug("Generated hash for {}: {}", loginRequest.getUsername(), newHash);
 
-            // Update or create user
-            User user = userRepository.findByUsername(loginRequest.getUsername()).orElse(new User());
+            // Set user details
             user.setUsername(loginRequest.getUsername());
             user.setPassword(newHash);
-            if (user.getRole() == null) {
+            if (user.getId() == null) { // New user
                 user.setRole("ADMIN"); // Default role for new users
+                logger.debug("Creating new user with username: {}", loginRequest.getUsername());
+            } else {
+                logger.debug("Updating existing user with username: {}", loginRequest.getUsername());
             }
-            userRepository.save(user);
-            logger.debug("User {} saved with hash: {}", loginRequest.getUsername(), newHash);
 
-            // Verify hash
+            // Save user to the database
+            userRepository.save(user);
+            logger.info("User {} saved with hash: {}", loginRequest.getUsername(), newHash);
+
+            // Verify hash (optional, for testing purposes)
             boolean matches = passwordEncoder.matches(loginRequest.getPassword(), newHash);
             String result = "Password matches: " + matches + ", Hash: " + newHash;
             logger.debug("Test result: {}", result);
-            return ResponseEntity.ok(ApiResponse.success(result, "Password test and update completed"));
+
+            String message = user.getId() == null ? "User created successfully" : "User password updated successfully";
+            return ResponseEntity.ok(ApiResponse.success(result, message));
         } catch (Exception e) {
-            logger.error("Failed to update password for {}: {}", loginRequest.getUsername(), e.getMessage());
-            return ResponseEntity.status(500).body(ApiResponse.error("Failed to update password",null));
+            logger.error("Failed to process user {}: {}", loginRequest.getUsername(), e.getMessage());
+            return ResponseEntity.status(500).body(ApiResponse.error("Failed to process user: " + e.getMessage(), null));
         }
     }
+
 }
